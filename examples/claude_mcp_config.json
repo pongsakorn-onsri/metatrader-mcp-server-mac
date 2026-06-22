@@ -1,0 +1,25 @@
+{
+  "_comment": "Register two MT5 accounts as two separate MCP servers in Claude Code. Each runs start.sh with its own port, prefix, and credentials. Adjust paths/values to match your machine. Do not commit real passwords.",
+  "mcpServers": {
+    "mt5-accountA": {
+      "command": "/Users/you/metatrader-mcp-server-linux/start.sh",
+      "env": {
+        "MT5LINUX_PORT": "18812",
+        "MT5_WINEPREFIX": "/Users/you/Library/Application Support/net.metaquotes.wine.metatrader5",
+        "MT5_LOGIN": "12345678",
+        "MT5_PASSWORD": "your_password_here",
+        "MT5_SERVER": "YourBroker-Demo"
+      }
+    },
+    "mt5-accountB": {
+      "command": "/Users/you/metatrader-mcp-server-linux/start.sh",
+      "env": {
+        "MT5LINUX_PORT": "18813",
+        "MT5_WINEPREFIX": "/Users/you/.mt5-accountB",
+        "MT5_LOGIN": "87654321",
+        "MT5_PASSWORD": "your_other_password_here",
+        "MT5_SERVER": "YourBroker-Live"
+      }
+    }
+  }
+}

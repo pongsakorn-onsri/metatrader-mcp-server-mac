@@ -1,47 +1,41 @@
 #!/bin/bash
-# macOS (Apple Silicon) launcher for metatrader-mcp-server
-#
-# Why this is set up the way it is:
-#   Generic Homebrew Wine cannot run the MT5 terminal on Apple Silicon (Rosetta
-#   translation faults). The official "MetaTrader 5.app" ships its own patched
-#   Wine 11.x that CAN. So we run the mt5linux RPyC bridge with the APP's Wine,
-#   inside the APP's prefix, where terminal64.exe actually works.
+# macOS (Apple Silicon) launcher for metatrader-mcp-server.
 #
 # Flow: Claude Code --stdio--> metatrader-mcp-server (native venv Python)
-#       --RPyC :18812--> mt5linux (app Wine 11.x, app prefix)
-#       --IPC--> terminal64.exe (app Wine)
+#       --RPyC :$MT5LINUX_PORT--> mt5linux bridge (app Wine 11.x, MT5 prefix)
+#       --IPC--> terminal64.exe (app Wine)  -> ONE trading account
+#
+# This launches (idempotently) the bridge for the chosen port/prefix, then execs
+# the MCP server pointed at that bridge. For MULTIPLE accounts, run one MCP
+# server per account, each with its own MT5LINUX_PORT + MT5_WINEPREFIX + creds —
+# register each as a separate MCP server in Claude Code. See examples/ and
+# LINUX_SETUP.md ("Running multiple accounts").
+#
+# Env knobs (all optional):
+#   MT5LINUX_PORT    bridge port for THIS account         (default 18812)
+#   MT5_WINEPREFIX   Wine prefix for THIS account          (default the app prefix)
+#   MT5_LOGIN        MT5 login                             (from environment)
+#   MT5_PASSWORD     MT5 password                          (from environment)
+#   MT5_SERVER       MT5 server name                       (from environment)
+#   MT5_PATH         terminal64.exe path (Windows-style)   (default standard install)
 set -euo pipefail
 
-REPO_DIR="$HOME/metatrader-mcp-server-linux"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_BIN="$REPO_DIR/.venv/bin"
 
-# --- Wine that can run the MT5 terminal (bundled with the macOS app) ---
-WINE_APP="/Applications/MetaTrader 5.app/Contents/SharedSupport/wine/bin/wine"
-APP_PREFIX="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5"
+# Port the MCP server's MetaTrader5 shim connects to. Exported so the shim
+# (src/MetaTrader5.py) talks to the right bridge for this account.
+export MT5LINUX_PORT="${MT5LINUX_PORT:-18812}"
+export MT5LINUX_HOST="${MT5LINUX_HOST:-127.0.0.1}"
 
-# Windows Python 3.10 lives in the ~/.mt5 prefix; Wine sees the whole FS as Z:.
-# We run it WITH the app Wine and INSIDE the app prefix so the MetaTrader5
-# package shares IPC with the terminal launched in that same prefix.
-PY_UNIX="$HOME/.mt5/drive_c/users/$USER/AppData/Local/Programs/Python/Python310/python.exe"
-PY_WIN="Z:$(printf '%s' "$PY_UNIX" | sed 's#/#\\#g')"
+# Ensure the bridge for this port/prefix is up (idempotent).
+MT5LINUX_PORT="$MT5LINUX_PORT" MT5LINUX_HOST="$MT5LINUX_HOST" \
+    "$REPO_DIR/bridge.sh"
 
-# Start the mt5linux RPyC bridge only if it isn't already up
-if ! nc -z 127.0.0.1 18812 2>/dev/null; then
-    WINEPREFIX="$APP_PREFIX" WINEDEBUG=-all \
-        "$WINE_APP" "$PY_WIN" -m mt5linux > /tmp/mt5linux.log 2>&1 &
-    for _ in $(seq 1 20); do
-        nc -z 127.0.0.1 18812 2>/dev/null && break
-        sleep 1
-    done
-fi
-
-# Credentials come from the ENVIRONMENT (set them outside this file — e.g. systemd
-# EnvironmentFile, `export` in the launching shell, or the "env" block in
-# backend/mcp-server.json; run_live passes its whole env down to this process).
-# ลบ fallback บัญชีเก่าออกแล้ว — creds (login/password/server) มาจาก env เท่านั้น
-# (set ใน backend/.env, mcp-server.json "env", หรือ export ก่อน spawn).
-# ถ้า env ไม่ตั้ง = ไม่ส่ง --login/--password/--server → MCP attach กับ MT5 terminal ที่เปิด/login
-# อยู่แล้ว (เช่น บัญชี cent ที่ login ค้างใน terminal) — กัน start.sh error ตอน spawn ที่ env ว่าง.
+# Credentials come from the ENVIRONMENT (set them outside this file — e.g. an
+# EnvironmentFile, `export` in the launching shell, or the "env" block in the
+# MCP server config). If unset, no --login/--password/--server is passed and the
+# server attaches to whatever account the terminal is already logged into.
 MT5_PATH="${MT5_PATH:-C:\Program Files\MetaTrader 5\terminal64.exe}"
 
 ARGS=(--transport stdio --path "$MT5_PATH")

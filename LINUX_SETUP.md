@@ -143,11 +143,18 @@ The `MetaTrader5` package is not available on Linux PyPI, so we need two patches
 
 ```bash
 cat > ~/metatrader-mcp-server/src/MetaTrader5.py << 'EOF'
-# Shim to redirect MetaTrader5 imports to mt5linux on Linux
-from mt5linux import MetaTrader5
+# Shim to redirect `import MetaTrader5` to the mt5linux RPyC bridge.
+# Bridge host/port come from env so multiple server processes can each talk
+# to a different bridge (= a different terminal = a different account):
+#   MT5LINUX_HOST (default 127.0.0.1), MT5LINUX_PORT (default 18812)
+import os
 import sys
+from mt5linux import MetaTrader5
 
-mt5 = MetaTrader5()
+mt5 = MetaTrader5(
+    host=os.getenv("MT5LINUX_HOST", "127.0.0.1"),
+    port=int(os.getenv("MT5LINUX_PORT", "18812")),
+)
 sys.modules[__name__] = mt5
 EOF
 ```
@@ -242,6 +249,146 @@ You're connected! Try:
 - *"What's my account balance?"*
 - *"Show me the current price of XAUUSD"*
 - *"List my open positions"*
+
+---
+
+## Running multiple accounts
+
+Each MT5 terminal can be logged into **one account at a time**, and the
+MetaTrader5 Python API attaches to a single terminal instance. So to drive
+several accounts at once you run the whole chain once per account, each on its
+own port and Wine prefix:
+
+```
+Account A:  MCP server A  --:18812-->  bridge A  -->  terminal A (prefix A)  -->  login A
+Account B:  MCP server B  --:18813-->  bridge B  -->  terminal B (prefix B)  -->  login B
+```
+
+What must be **distinct per account**:
+
+| Per account | Why |
+|-------------|-----|
+| `MT5LINUX_PORT` (18812, 18813, …) | each bridge needs its own TCP port |
+| `MT5_WINEPREFIX` | each terminal needs its own data dir, or their IPC collides |
+| credentials (`MT5_LOGIN/PASSWORD/SERVER`) | the actual accounts |
+| MCP server name in Claude (`mt5-accountA`, …) | so you can address each |
+
+### 1. Give each account its own Wine prefix + terminal
+
+Account A uses the default app prefix. For Account B, create a second prefix
+with its own MT5 terminal + the Windows Python/packages (repeat Steps 1–3 of
+this guide against the new prefix, e.g. `WINEPREFIX=~/.mt5-accountB`). Log that
+terminal into Account B once, interactively, so the session is remembered.
+
+### 2. Start a bridge per account
+
+`bridge.sh` is idempotent and reads `MT5LINUX_PORT` / `MT5_WINEPREFIX`:
+
+```bash
+MT5LINUX_PORT=18812 MT5_WINEPREFIX="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5" ./bridge.sh
+MT5LINUX_PORT=18813 MT5_WINEPREFIX="$HOME/.mt5-accountB" ./bridge.sh
+```
+
+### 3. Register one MCP server per account
+
+`start.sh` launches the right bridge and the MCP server for whatever env it
+gets. Register each account separately (see [`examples/claude_mcp_config.json`](examples/claude_mcp_config.json)):
+
+```bash
+claude mcp add --transport stdio mt5-accountA \
+  --env MT5LINUX_PORT=18812 \
+  --env MT5_WINEPREFIX="$HOME/Library/Application Support/net.metaquotes.wine.metatrader5" \
+  --env MT5_LOGIN=12345678 --env MT5_PASSWORD='...' --env MT5_SERVER=YourBroker-Demo \
+  -- $HOME/metatrader-mcp-server/start.sh
+
+claude mcp add --transport stdio mt5-accountB \
+  --env MT5LINUX_PORT=18813 \
+  --env MT5_WINEPREFIX="$HOME/.mt5-accountB" \
+  --env MT5_LOGIN=87654321 --env MT5_PASSWORD='...' --env MT5_SERVER=YourBroker-Live \
+  -- $HOME/metatrader-mcp-server/start.sh
+```
+
+In Claude Code both appear under `/mcp`; tools are namespaced per server
+(`mt5-accountA`, `mt5-accountB`), so "close my XAUUSD position on account B"
+routes to the right terminal.
+
+---
+
+## Manual run via command line (without MCP)
+
+You don't need Claude Code / MCP to use this. You can drive a terminal directly
+from the shell — handy for scripts, cron, or testing. Two entry points are
+installed by `pip install -e .`:
+
+- `metatrader-mcp-server` — the MCP server (stdio/SSE/HTTP)
+- `metatrader-http-server` — a plain REST/OpenAPI server (Swagger UI at `/docs`)
+
+### Step 1 — Start the bridge for the account you want
+
+```bash
+# single account (default port/prefix)
+./bridge.sh
+
+# or a specific account
+MT5LINUX_PORT=18813 MT5_WINEPREFIX="$HOME/.mt5-accountB" ./bridge.sh
+```
+
+Point your client at that bridge by exporting the same port:
+
+```bash
+export MT5LINUX_PORT=18813   # the shim reads this; omit for the default 18812
+```
+
+### Step 2a — REST / OpenAPI server (easiest for manual use)
+
+```bash
+.venv/bin/metatrader-http-server \
+  --login 12345678 \
+  --password 'your_password' \
+  --server YourBroker-Demo \
+  --path 'C:\Program Files\MetaTrader 5\terminal64.exe' \
+  --host 127.0.0.1 --port 8000
+```
+
+Then call it with `curl` (or open `http://127.0.0.1:8000/docs`):
+
+```bash
+curl http://127.0.0.1:8000/api/v1/account/info
+curl http://127.0.0.1:8000/api/v1/positions
+
+# place a market order (note: prefix is /order, singular)
+curl -X POST http://127.0.0.1:8000/api/v1/order/market \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"XAUUSD","volume":0.1,"type":"BUY","comment":"manual"}'
+```
+
+### Step 2b — MCP server over HTTP (instead of stdio)
+
+If you'd rather talk MCP without Claude Code spawning it, run it on a port:
+
+```bash
+.venv/bin/metatrader-mcp-server \
+  --login 12345678 --password 'your_password' --server YourBroker-Demo \
+  --path 'C:\Program Files\MetaTrader 5\terminal64.exe' \
+  --transport streamable-http --host 127.0.0.1 --port 8080
+```
+
+### Quick Python REPL check
+
+```bash
+export MT5LINUX_PORT=18812
+.venv/bin/python - <<'PY'
+import sys; sys.path.insert(0, "src")          # find the MetaTrader5 shim
+import MetaTrader5 as mt5
+print("init:", mt5.initialize(login=12345678, password="your_password", server="YourBroker-Demo"))
+print(mt5.account_info())
+PY
+```
+
+> Tip: for several accounts, keep one `*.env` per account (see
+> [`examples/account-a.env`](examples/account-a.env) /
+> [`examples/account-b.env`](examples/account-b.env)) and
+> `set -a; source ~/.mt5-accountB.env; set +a` before running any of the above.
 
 ---
 

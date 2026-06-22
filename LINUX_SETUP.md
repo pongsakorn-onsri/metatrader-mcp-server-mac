@@ -275,10 +275,24 @@ What must be **distinct per account**:
 
 ### 1. Give each account its own Wine prefix + terminal
 
-Account A uses the default app prefix. For Account B, create a second prefix
-with its own MT5 terminal + the Windows Python/packages (repeat Steps 1–3 of
-this guide against the new prefix, e.g. `WINEPREFIX=~/.mt5-accountB`). Log that
-terminal into Account B once, interactively, so the session is remembered.
+Account A uses the default app prefix. For Account B, **clone** that working
+prefix instead of building one from scratch — on Apple-Silicon Wine the clone is
+far more reliable, and the shared Windows Python (in `~/.mt5`) is reached via
+Wine's `Z:` mapping so it is not copied:
+
+```bash
+./new-account-prefix.sh "$HOME/.mt5-accountB"
+```
+
+The script skips regenerable price-history/log caches (pass `KEEP_CACHE=1` for a
+full copy) and prints the exact next commands. Then log that terminal into
+Account B once, interactively, so the session is remembered:
+
+```bash
+MT5_WINEPREFIX="$HOME/.mt5-accountB" ./launch-terminal.sh
+```
+
+Log in to the target account, tick **save account information**, then quit.
 
 ### 2. Start a bridge per account
 

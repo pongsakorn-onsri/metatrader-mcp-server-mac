@@ -69,7 +69,15 @@ fi
 
 mkdir -p "$TARGET"
 echo "Cloning prefix (this can take a few minutes)…"
-rsync -a --info=progress2 "${EXCLUDES[@]}" "$SRC/" "$TARGET/"
+# Progress flag differs across rsync builds: GNU rsync has --info=progress2,
+# macOS's bundled openrsync does not. Use it only when supported.
+PROGRESS=()
+if rsync --help 2>&1 | grep -q -- '--info'; then
+    PROGRESS=(--info=progress2)
+fi
+# ${arr[@]+"${arr[@]}"} expands safely to nothing when the array is empty,
+# which matters under `set -u` on macOS's bash 3.2.
+rsync -a ${PROGRESS[@]+"${PROGRESS[@]}"} ${EXCLUDES[@]+"${EXCLUDES[@]}"} "$SRC/" "$TARGET/"
 
 echo
 echo "Done. New prefix: $TARGET ($(du -sh "$TARGET" 2>/dev/null | cut -f1))"
